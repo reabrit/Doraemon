@@ -653,6 +653,9 @@ h4{
     #section6 .my-xp li{
         min-height:  11em;
     }
+    #section6{
+        min-height: 1205px;
+    }
 }
 @media only screen and (max-width: 768px){
     /*导航改变*/
@@ -754,7 +757,9 @@ h4{
     #section6 .my-xp li{
         min-height:  22em;
     }
-
+    #section6 .my-xp li >div{
+        min-height: 7em;
+    }
 
 }
 
