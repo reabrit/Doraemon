@@ -263,6 +263,11 @@
         height: 80px;
         margin-bottom: 1rem;
     }
+    .login-form{
+        width: 80px;
+        height: 80px;
+        margin-bottom: 1rem;
+    }
     
     .login-container {
         padding: 1.5rem;
@@ -1094,7 +1099,7 @@
     <div class="import-export">
         <div class="file-input">
             <button class="primary-btn" onclick="document.getElementById('fileInput').click()">📥 导入单词</button>
-            <input type="file" id="fileInput" accept=".txt" hidden>
+            <input type="file" id="fileInput" accept=".xlsx, .xls, .csv" hidden>
         </div>
         <button class="primary-btn" onclick="exportWords()">📤 导出单词</button>
         <button class="primary-btn danger-btn" onclick="deleteAllWords()">⚠️ 清空词库</button>
@@ -1191,10 +1196,11 @@
         
     </div>
 </div>
-
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/particles.js/2.0.0/particles.min.js"></script>
     <script src="chart.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
+
     <script>
 // ============== 全局变量 ==============
 let currentChallengeStats = { correct: 0, wrong: 0, total: 0 };
@@ -1647,21 +1653,43 @@ function updateChallengeDisplay() {
 
 // ============== 新增导出词库功能 ==============
 function exportWords() {
-    if(words.length === 0) {
+    if (words.length === 0) {
         alert("当前词库为空，没有可导出的内容");
         return;
     }
+
+    // 创建工作表数据
+    const worksheetData = [
+        ["English", "Chinese"], // 表头
+        ...words.map(word => [word.en, word.cn])
+    ];
+
+    const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
     
-    const content = words.map((word, index) => 
-        `'${word.en.replace(/'/g, "\\'")}''${word.cn.replace(/'/g, "\\'")}'`
-    ).join('\n');
-    
-    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    // 设置列宽
+    worksheet['!cols'] = [
+        { wch: Math.max(...words.map(w => w.en.length)) + 5 },
+        { wch: Math.max(...words.map(w => w.cn.length)) + 5 }
+    ];
+
+    // 创建工作簿
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "单词表");
+
+    // 生成文件
+    const excelBuffer = XLSX.write(workbook, {
+        bookType: 'xlsx',
+        type: 'array'
+    });
+
+    const blob = new Blob([excelBuffer], { 
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    });
+
     const url = URL.createObjectURL(blob);
-    
     const a = document.createElement('a');
     a.href = url;
-    a.download = `单词列表_${new Date().toLocaleDateString().replace(/\//g, '-')}.txt`;
+    a.download = `单词列表_${new Date().toLocaleDateString().replace(/\//g, '-')}.xlsx`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -2132,62 +2160,83 @@ function toggleWordForm() {
 }
 
 // ============== 文件操作 ==============
-document.getElementById('fileInput').addEventListener('change', function(e) {
+document.getElementById('fileInput').addEventListener('change', async function(e) {
     const file = e.target.files[0];
     if (!file) return;
+
+    // 支持的文件类型
+    const validTypes = [
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'application/vnd.ms-excel',
+        'text/csv'
+    ];
     
+    if (!validTypes.includes(file.type)) {
+        alert("请上传Excel文件（.xlsx, .xls, .csv）");
+        return;
+    }
+
     const reader = new FileReader();
-    reader.onload = function(e) {
-        const content = e.target.result;
-        const lines = content.split('\n');
-        let importedCount = 0;
-        let duplicateCount = 0;
+    reader.onload = async function(e) {
+        try {
+            const data = new Uint8Array(e.target.result);
+            const workbook = XLSX.read(data, { type: 'array' });
+            const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+            const jsonData = XLSX.utils.sheet_to_json(worksheet, {
+                header: 1,
+                defval: ""
+            });
 
-        // 使用更严格的正则匹配
-        const wordRegExp = /^'((?:\\'|[^'])+)''((?:\\'|[^'])+)'$/;
+            let importedCount = 0;
+            let duplicateCount = 0;
+            let formatErrorCount = 0;
 
-        lines.forEach((line, index) => {
-            const trimmed = line.trim();
-            if (!trimmed) return;
+            // 自动检测列位置
+            const headerRow = jsonData[0];
+            const enIndex = headerRow.findIndex(c => c.toString().match(/english/i));
+            const cnIndex = headerRow.findIndex(c => c.toString().match(/chinese/i));
 
-            const match = trimmed.match(wordRegExp);
-            if (!match) {
-                console.warn(`第 ${index + 1} 行格式错误: ${trimmed}`);
-                return;
-            }
+            jsonData.slice(1).forEach((row, index) => {
+                const en = (row[enIndex] || "").toString().trim();
+                const cn = (row[cnIndex] || "").toString().trim();
 
-            const en = match[1].replace(/\\'/g, "'").trim();
-            const cn = match[2].replace(/\\'/g, "'").trim();
-            
-            // 优化去重检查
-            const exists = words.some(w => 
-                w.en.toLowerCase() === en.toLowerCase() && 
-                w.cn.toLowerCase() === cn.toLowerCase()
-            );
+                if (!en || !cn) {
+                    formatErrorCount++;
+                    return;
+                }
 
-            if (!exists) {
-                words.push({ en, cn });
-                importedCount++;
-            } else {
-                duplicateCount++;
-            }
-        });
+                // 去重检查
+                const exists = words.some(w => 
+                    w.en.toLowerCase() === en.toLowerCase() && 
+                    w.cn.toLowerCase() === cn.toLowerCase()
+                );
 
-        localStorage.setItem('words', JSON.stringify(words));
-        renderWordList(); // 新增：导入后刷新词库显示
-        
-        const resultMessage = [
-            `成功导入 ${importedCount} 个单词`,
-            duplicateCount > 0 && `忽略 ${duplicateCount} 个重复项`,
-            lines.length - importedCount - duplicateCount > 0 && 
-            `${lines.length - importedCount - duplicateCount} 行格式错误`
-        ].filter(Boolean).join('\n');
+                if (!exists) {
+                    words.push({ en, cn });
+                    importedCount++;
+                } else {
+                    duplicateCount++;
+                }
+            });
 
-        alert(resultMessage);
-        e.target.value = '';
+            localStorage.setItem('words', JSON.stringify(words));
+            renderWordList();
+
+            const resultMsg = [
+                `成功导入 ${importedCount} 个单词`,
+                duplicateCount > 0 && `跳过 ${duplicateCount} 个重复项`,
+                formatErrorCount > 0 && `${formatErrorCount} 行格式错误`
+            ].filter(Boolean).join("\n");
+
+            alert(resultMsg);
+            e.target.value = '';
+        } catch (error) {
+            console.error('Excel解析错误:', error);
+            alert("文件解析失败，请检查文件格式");
+        }
     };
-    
-    reader.readAsText(file, 'UTF-8');
+
+    reader.readAsArrayBuffer(file);
 });
 // ============== 新增/修复的统计更新逻辑 ==============
 // ============== 第一部分：更新挑战显示 ==============
@@ -2395,21 +2444,43 @@ function updateWrongWordsDisplay() {
 
 // === 将以下代码添加到全局作用域（例如放在 updateWrongWordsDisplay 函数外部） ===
 function exportWrongWords() {
-    if(stats.wrong.length === 0) {
+    if (stats.wrong.length === 0) {
         alert("当前没有错题可导出");
         return;
     }
+
+    // 创建工作表数据
+    const worksheetData = [
+        ["English", "Chinese"], // 表头
+        ...stats.wrong.map(word => [word.en, word.cn])
+    ];
+
+    const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
     
-    const content = stats.wrong.map((word, index) => 
-        `${index + 1}. ${word.en} -> ${word.cn}`
-    ).join('\n');
-    
-    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    // 设置列宽（自适应内容长度）
+    worksheet['!cols'] = [
+        { wch: Math.max(...stats.wrong.map(w => w.en.length)) + 5 },
+        { wch: Math.max(...stats.wrong.map(w => w.cn.length)) + 5 }
+    ];
+
+    // 创建工作簿
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "错题本");
+
+    // 生成文件
+    const excelBuffer = XLSX.write(workbook, {
+        bookType: 'xlsx',
+        type: 'array'
+    });
+
+    const blob = new Blob([excelBuffer], { 
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    });
+
     const url = URL.createObjectURL(blob);
-    
     const a = document.createElement('a');
     a.href = url;
-    a.download = `错题列表_${new Date().toLocaleDateString().replace(/\//g, '-')}.txt`;
+    a.download = `错题本_${new Date().toLocaleDateString().replace(/\//g, '-')}.xlsx`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
